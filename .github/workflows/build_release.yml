@@ -1,0 +1,74 @@
+name: Build and Release (Windows)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+jobs:
+  build_windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pillow requests
+
+      - name: Build EXE with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --add-data "hijikimame_body.png;." --add-data "takoyaki.png;." --add-data "exit_animation.gif;." --icon hijikimame_desktop.ico hijikimame_desktop.py
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: ${{ github.ref_name }}
+          body: "Automated build: ${{ github.ref_name }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate SHA256 for EXE
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          p = 'dist/hijikimame_desktop.exe'
+          h = hashlib.sha256()
+          with open(p, 'rb') as f:
+              for chunk in iter(lambda: f.read(8192), b''):
+                  h.update(chunk)
+          s = h.hexdigest()
+          with open('dist/hijikimame_desktop.exe.sha256', 'w') as out:
+              out.write(s + '  hijikimame_desktop.exe\n')
+          print(s)
+          PY
+
+      - name: Upload EXE to Release
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: dist/hijikimame_desktop.exe
+          asset_name: hijikimame_desktop.exe
+          asset_content_type: application/octet-stream
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload SHA256 to Release
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: dist/hijikimame_desktop.exe.sha256
+          asset_name: hijikimame_desktop.exe.sha256
+          asset_content_type: text/plain
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

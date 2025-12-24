@@ -16,6 +16,9 @@ import atexit
 import socket 
 import subprocess
 import runpy
+import threading
+import hashlib
+import re
 try:
     import requests
 except Exception:
@@ -126,6 +129,22 @@ def _self_replace_target(target_path, timeout=30):
         return False
 
 
+def _sha256_of_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(8192), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def start_update_check_thread():
+    try:
+        t = threading.Thread(target=_check_and_initiate_update, daemon=True)
+        t.start()
+    except:
+        pass
+
+
 def _check_and_initiate_update():
     """GitHub Releases を確認して、更新があればダウンロード→自己置換フローを開始する。
 
@@ -152,6 +171,25 @@ def _check_and_initiate_update():
         tag = rel.get('tag_name')
         if not tag or tag == VERSION:
             return
+        # try to find accompanying sha256 asset (preferred) for verification
+        sha_expected = None
+        for a in rel.get('assets', []):
+            aname = a.get('name', '').lower()
+            if aname.endswith('.sha256') or aname.endswith('.sha256.txt') or aname.endswith('.sha256sum'):
+                sha_url = a.get('url')
+                if sha_url:
+                    try:
+                        dl_sha_headers = dict(headers)
+                        dl_sha_headers['Accept'] = 'application/octet-stream'
+                        rsha = requests.get(sha_url, headers=dl_sha_headers, timeout=20)
+                        if rsha.status_code == 200:
+                            txt = rsha.text.strip()
+                            m = re.search(r'([A-Fa-f0-9]{64})', txt)
+                            if m:
+                                sha_expected = m.group(1).lower()
+                    except:
+                        pass
+                break
         exe_name = os.path.basename(sys.executable)
         asset = None
         for a in rel.get('assets', []):
@@ -175,6 +213,22 @@ def _check_and_initiate_update():
                 for chunk in r.iter_content(8192):
                     if chunk:
                         f.write(chunk)
+        # If we have an expected SHA, verify the download
+        try:
+            if sha_expected:
+                actual = _sha256_of_file(tmp_path)
+                if actual.lower() != sha_expected.lower():
+                    try:
+                        os.remove(tmp_path)
+                    except:
+                        pass
+                    return
+        except Exception:
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
+            return
         try:
             if os.path.exists(new_exe_path):
                 os.remove(new_exe_path)
@@ -961,7 +1015,7 @@ if __name__ == "__main__":
 
     # 通常起動時は更新チェックを実行（フロー開始 -> 必要ならダウンロードして置換プロセスを起動し、現在プロセスは終了する）
     try:
-        _check_and_initiate_update()
+        start_update_check_thread()
     except Exception:
         pass
 
