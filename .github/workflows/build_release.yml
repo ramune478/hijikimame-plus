@@ -1,5 +1,8 @@
 name: Build and Release (Windows)
 
+permissions:
+  contents: write
+
 on:
   push:
     tags:
