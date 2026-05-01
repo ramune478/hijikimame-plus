@@ -101,7 +101,7 @@ DEFAULT_EYE_COLOR = 'black'
 INVERTED_EYE_COLOR = 'white'
 
 # アプリバージョン（リリースタグと一致させてください、例: "v1.2.3"）
-VERSION = "v1.0.9"
+VERSION = "v2.0.0
 
 
 def _self_replace_target(target_path, timeout=30):
@@ -380,6 +380,10 @@ class HijikimameApp:
         self.master.after(100, self._check_ipc_command)
         self._latest_update_tag = None
         self._latest_update_body = None
+        self._latest_update_download_url = None
+        self._latest_update_sha_expected = None
+        self._update_available = False
+        self._update_button = None
         self.master.after(500, self.start_update_check_thread)
         try:
             self.master.after(200, lambda: self.open_edit_window())
@@ -390,6 +394,89 @@ class HijikimameApp:
         try:
             messagebox.showinfo(title, text)
         except:
+            pass
+
+    def _refresh_update_button(self):
+        try:
+            if self._update_button is None:
+                return
+            if self._update_available:
+                if not self._update_button.winfo_ismapped():
+                    self._update_button.pack(side='right', padx=2)
+            else:
+                self._update_button.pack_forget()
+        except:
+            pass
+
+    def _perform_update(self):
+        if not self._update_available:
+            try:
+                self._show_update_dialog("更新なし", "利用可能なアップデートはありません。")
+            except:
+                pass
+            return
+        if not getattr(sys, 'frozen', False):
+            try:
+                self._show_update_dialog("実行ファイルで起動してください", "更新はexe版からのみ実行できます。")
+            except:
+                pass
+            return
+        try:
+            self._show_update_dialog("更新開始", f"{self._latest_update_tag} をダウンロードして適用します。")
+        except:
+            pass
+        threading.Thread(target=self._download_and_apply_update, daemon=True).start()
+
+    def _download_and_apply_update(self):
+        try:
+            token = os.environ.get('GITHUB_UPDATE_TOKEN') or os.environ.get('GITHUB_TOKEN')
+            headers = {"Accept": "application/vnd.github.v3+json"}
+            if token:
+                headers["Authorization"] = f"token {token}"
+            dl_headers = dict(headers)
+            dl_headers["Accept"] = "application/octet-stream"
+            download_url = self._latest_update_download_url
+            if not download_url:
+                self.master.after(0, lambda: self._show_update_dialog("更新不可", "ダウンロードURLが見つかりません。"))
+                return
+            exe_name = os.path.basename(sys.executable)
+            exe_dir = os.path.dirname(sys.executable)
+            new_exe_path = os.path.join(exe_dir, exe_name + ".update.exe")
+            tmp_path = new_exe_path + ".download"
+            try:
+                with requests.get(download_url, headers=dl_headers, stream=True, timeout=60) as r:
+                    r.raise_for_status()
+                    with open(tmp_path, 'wb') as f:
+                        for chunk in r.iter_content(8192):
+                            if chunk:
+                                f.write(chunk)
+                if self._latest_update_sha_expected:
+                    actual = _sha256_of_file(tmp_path)
+                    if actual.lower() != self._latest_update_sha_expected.lower():
+                        try:
+                            os.remove(tmp_path)
+                        except:
+                            pass
+                        self.master.after(0, lambda: self._show_update_dialog("更新失敗", "ダウンロードファイルの検証に失敗しました。"))
+                        return
+                if os.path.exists(new_exe_path):
+                    os.remove(new_exe_path)
+                os.replace(tmp_path, new_exe_path)
+            except Exception:
+                try:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except:
+                    pass
+                self.master.after(0, lambda: self._show_update_dialog("更新失敗", "更新のダウンロードまたは保存に失敗しました。"))
+                return
+            try:
+                subprocess.Popen([new_exe_path, '--self-replace', sys.executable], close_fds=True)
+                self.master.after(0, lambda: self._show_update_dialog("更新中", "更新を適用しています。アプリを再起動します。"))
+                sys.exit(0)
+            except Exception:
+                self.master.after(0, lambda: self._show_update_dialog("更新失敗", "更新プロセスの起動に失敗しました。"))
+        except Exception:
             pass
 
     def start_update_check_thread(self):
@@ -421,10 +508,6 @@ class HijikimameApp:
                 return
             self._latest_update_tag = tag
             self._latest_update_body = body
-            self.master.after(0, lambda: self._show_update_dialog(
-                "更新を検出しました",
-                f"新しいバージョン: {tag}\n\n{body}"
-            ))
             sha_expected = None
             for a in rel.get('assets', []):
                 aname = a.get('name', '').lower()
@@ -452,51 +535,14 @@ class HijikimameApp:
                     break
             if not asset:
                 return
-            if not getattr(sys, 'frozen', False):
-                return
             download_url = asset.get('url')
             if not download_url:
                 return
-            exe_dir = os.path.dirname(sys.executable)
-            new_exe_path = os.path.join(exe_dir, exe_name + ".update.exe")
-            tmp_path = new_exe_path + ".download"
-            dl_headers = dict(headers)
-            dl_headers["Accept"] = "application/octet-stream"
-            with requests.get(download_url, headers=dl_headers, stream=True, timeout=60) as r:
-                r.raise_for_status()
-                with open(tmp_path, 'wb') as f:
-                    for chunk in r.iter_content(8192):
-                        if chunk:
-                            f.write(chunk)
-            try:
-                if sha_expected:
-                    actual = _sha256_of_file(tmp_path)
-                    if actual.lower() != sha_expected.lower():
-                        try:
-                            os.remove(tmp_path)
-                        except:
-                            pass
-                        return
-            except Exception:
-                try:
-                    os.remove(tmp_path)
-                except:
-                    pass
-                return
-            try:
-                if os.path.exists(new_exe_path):
-                    os.remove(new_exe_path)
-                os.replace(tmp_path, new_exe_path)
-            except Exception:
-                try:
-                    os.rename(tmp_path, new_exe_path)
-                except Exception:
-                    return
-            try:
-                subprocess.Popen([new_exe_path, '--self-replace', sys.executable], close_fds=True)
-                sys.exit(0)
-            except Exception:
-                return
+            self._latest_update_download_url = download_url
+            self._latest_update_sha_expected = sha_expected
+            self._update_available = True
+            self.master.after(0, self._refresh_update_button)
+            return
         except Exception:
             return
 
@@ -875,7 +921,7 @@ class HijikimameApp:
         repulsion_cb.pack(anchor='w', padx=8, pady=2)
 
         tk.Label(self._edit_win, text="マウスカーソルの追従速度:").pack(anchor='w', padx=8)
-        tracking_scale = tk.Scale(self._edit_win, from_=0.001, to=0.1, resolution=0.001, orient='horizontal')
+        tracking_scale = tk.Scale(self._edit_win, from_=0.0, to=0.1, resolution=0.001, orient='horizontal')
         tracking_scale.set(self.settings.get('tracking_speed', TRACKING_SPEED))
         tracking_scale.pack(fill='x', padx=8)
 
@@ -953,6 +999,9 @@ class HijikimameApp:
         # ボタンを下に配置
         tk.Button(bottom_frame, text="初期化", command=reset_settings).pack(side='left', padx=2)
         tk.Button(bottom_frame, text="適用", command=apply_settings).pack(side='left', padx=2)
+        self._update_button = tk.Button(bottom_frame, text="アップデートを適用", bg="#8fbc8f", command=self._perform_update)
+        if self._update_available:
+            self._update_button.pack(side='right', padx=2)
         tk.Button(bottom_frame, text="閉じる", command=self._edit_win.destroy).pack(side='right', padx=2)
         tk.Button(bottom_frame, text="全て閉じる", bg="#ffcccb", command=self.close_all_instances).pack(side='right', padx=2)
 
