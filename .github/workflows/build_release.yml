@@ -28,7 +28,7 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --add-data "hijikimame_body.png;." --add-data "takoyaki.png;." --add-data "exit_animation.gif;." --icon hijikimame_desktop.ico hijikimame_desktop.py
+          pyinstaller --onefile --windowed --add-data "hijikimame_body.png;." --add-data "takoyaki.png;." --add-data "exit_animation.gif;." --add-data "nijiki;nijiki" --icon hijikimame_desktop.ico hijikimame_desktop.py
 
       - name: Create GitHub Release
         id: create_release

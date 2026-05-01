@@ -5,7 +5,7 @@ a = Analysis(
     ['hijikimame_desktop.py'],
     pathex=[],
     binaries=[],
-    datas=[('hijikimame_body.png', '.'), ('takoyaki.png', '.'), ('exit_animation.gif', '.')],
+    datas=[('hijikimame_body.png', '.'), ('takoyaki.png', '.'), ('exit_animation.gif', '.'), ('nijiki', 'nijiki')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
