@@ -280,6 +280,7 @@ class HijikimameApp:
             'max_throw_multiplier': 10,
             'edge_bounce_count': EDGE_BOUNCE_COUNT_DEFAULT,
             'edge_bounce_strength': EDGE_BOUNCE_STRENGTH,
+            'mouse_repulsion_enabled': True,
         }
 
         try:
@@ -653,6 +654,10 @@ class HijikimameApp:
             cb = make_cb(mi, iv)
             cb.pack(anchor='w', padx=8, pady=2)
 
+        repulsion_var = tk.IntVar(value=1 if self.settings.get('mouse_repulsion_enabled', True) else 0)
+        repulsion_cb = tk.Checkbutton(self._edit_win, text="ひじき豆の反発", variable=repulsion_var)
+        repulsion_cb.pack(anchor='w', padx=8, pady=2)
+
         tk.Label(self._edit_win, text="マウスカーソルの追従速度:").pack(anchor='w', padx=8)
         tracking_scale = tk.Scale(self._edit_win, from_=0.001, to=0.1, resolution=0.001, orient='horizontal')
         tracking_scale.set(self.settings.get('tracking_speed', TRACKING_SPEED))
@@ -660,12 +665,12 @@ class HijikimameApp:
 
         tk.Label(self._edit_win, text="投げ速度倍率:").pack(anchor='w', padx=8)
         throw_scale = tk.Scale(self._edit_win, from_=0.1, to=10, resolution=0.1, orient='horizontal')
-        throw_scale.set(self.settings.get('throw_speed_multiplier', 2.5))
+        throw_scale.set(self.settings.get('throw_speed_multiplier', 3.0))
         throw_scale.pack(fill='x', padx=8)
 
         tk.Label(self._edit_win, text="投げ 最大倍率:").pack(anchor='w', padx=8)
         max_throw_scale = tk.Scale(self._edit_win, from_=1, to=50, orient='horizontal')
-        max_throw_scale.set(self.settings.get('max_throw_multiplier', 10))
+        max_throw_scale.set(self.settings.get('max_throw_multiplier', 15))
         max_throw_scale.pack(fill='x', padx=8)
 
         tk.Label(self._edit_win, text="画面端バウンド回数:").pack(anchor='w', padx=8)
@@ -692,6 +697,7 @@ class HijikimameApp:
             except:
                 pass
             self.settings['nijiki_fps'] = int(nijiki_scale.get())
+            self.settings['mouse_repulsion_enabled'] = bool(repulsion_var.get())
             self.settings['tracking_speed'] = float(tracking_scale.get())
             self.settings['throw_speed_multiplier'] = float(throw_scale.get())
             self.settings['max_throw_multiplier'] = float(max_throw_scale.get())
@@ -716,6 +722,7 @@ class HijikimameApp:
             self.settings['max_throw_multiplier'] = 10
             self.settings['edge_bounce_count'] = EDGE_BOUNCE_COUNT_DEFAULT
             self.settings['edge_bounce_strength'] = EDGE_BOUNCE_STRENGTH
+            self.settings['mouse_repulsion_enabled'] = True
             self.settings['edit_enabled'] = {0: True, 1: True, 2: True, 3: True}
             nijiki_scale.set(NIJIKI_DEFAULT_FPS)
             tracking_scale.set(TRACKING_SPEED)
@@ -723,6 +730,7 @@ class HijikimameApp:
             max_throw_scale.set(10)
             bounce_scale.set(EDGE_BOUNCE_COUNT_DEFAULT)
             bounce_strength_scale.set(EDGE_BOUNCE_STRENGTH)
+            repulsion_var.set(1)
             for mi, iv in edit_vars.items(): iv.set(1)
             apply_settings()
 
@@ -858,11 +866,12 @@ class HijikimameApp:
             self.y = mouse_y - (self.image_height // 2)
             self.vx = 0; self.vy = 0
         else:
+            repulsion_enabled = self.settings.get('mouse_repulsion_enabled', True)
             # Detect sudden cursor acceleration and convert to an impulse throw
             try:
                 # only trigger mouse-acceleration throw when cursor is near the character
                 current_collision_distance = COLLISION_DISTANCE_BASE + (mouse_speed * COLLISION_EXPANSION_RATE)
-                if mouse_a_mag >= MOUSE_ACCELERATION_THROW_THRESHOLD and distance < current_collision_distance:
+                if repulsion_enabled and mouse_a_mag >= MOUSE_ACCELERATION_THROW_THRESHOLD and distance < current_collision_distance:
                     # apply throw impulse from cursor acceleration
                     self.vx = mouse_ax * MOUSE_ACCELERATION_THROW_MULTIPLIER
                     self.vy = mouse_ay * MOUSE_ACCELERATION_THROW_MULTIPLIER
@@ -878,7 +887,8 @@ class HijikimameApp:
                 self.x += self.vx; self.y += self.vy
             else:
                 current_collision_distance = COLLISION_DISTANCE_BASE + (mouse_speed * COLLISION_EXPANSION_RATE)
-                if distance < current_collision_distance:
+                repulsion_enabled = self.settings.get('mouse_repulsion_enabled', True)
+                if repulsion_enabled and distance < current_collision_distance:
                     actual_bounce_force = max(10, mouse_speed * BOUNCE_STRENGTH)
                     if distance != 0:
                         self.vx = -(dx_char / distance) * actual_bounce_force
