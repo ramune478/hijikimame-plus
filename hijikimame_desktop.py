@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter import messagebox
 from PIL import Image, ImageTk
 import collections
 try:
@@ -34,6 +35,9 @@ EXIT_COMMAND = b'ANIMATED_EXIT'
 CLIENT_TIMEOUT = 3.0 
 
 # --- PyInstaller対応関数 ---
+GITHUB_DEFAULT_OWNER = "hijikigame"
+GITHUB_DEFAULT_REPO = "hijikimame-plus"
+
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -97,7 +101,7 @@ DEFAULT_EYE_COLOR = 'black'
 INVERTED_EYE_COLOR = 'white'
 
 # アプリバージョン（リリースタグと一致させてください、例: "v1.2.3"）
-VERSION = "v1.0.4"
+VERSION = "v1.0.7"
 
 
 def _self_replace_target(target_path, timeout=30):
@@ -374,10 +378,222 @@ class HijikimameApp:
         self.master.bind("<Control-r>", lambda e: self.toggle_mode()) 
         
         self.master.after(100, self._check_ipc_command)
+        self._latest_update_tag = None
+        self._latest_update_body = None
+        self.master.after(500, self.start_update_check_thread)
         try:
             self.master.after(200, lambda: self.open_edit_window())
         except:
             pass
+
+    def _show_update_dialog(self, title, text):
+        try:
+            messagebox.showinfo(title, text)
+        except:
+            pass
+
+    def start_update_check_thread(self):
+        try:
+            t = threading.Thread(target=self._check_and_initiate_update, daemon=True)
+            t.start()
+        except:
+            pass
+
+    def _check_and_initiate_update(self):
+        if requests is None:
+            return
+        owner = os.environ.get('GITHUB_OWNER', GITHUB_DEFAULT_OWNER)
+        repo = os.environ.get('GITHUB_REPO', GITHUB_DEFAULT_REPO)
+        if not owner or not repo:
+            return
+        token = os.environ.get('GITHUB_UPDATE_TOKEN') or os.environ.get('GITHUB_TOKEN')
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        if token:
+            headers["Authorization"] = f"token {token}"
+        try:
+            resp = requests.get(f"https://api.github.com/repos/{owner}/{repo}/releases/latest", headers=headers, timeout=10)
+            if resp.status_code != 200:
+                return
+            rel = resp.json()
+            tag = rel.get('tag_name')
+            body = rel.get('body', '') or '更新内容はありません。'
+            if not tag or tag == VERSION:
+                return
+            self._latest_update_tag = tag
+            self._latest_update_body = body
+            self.master.after(0, lambda: self._show_update_dialog(
+                "更新を検出しました",
+                f"新しいバージョン: {tag}\n\n{body}"
+            ))
+            sha_expected = None
+            for a in rel.get('assets', []):
+                aname = a.get('name', '').lower()
+                if aname.endswith('.sha256') or aname.endswith('.sha256.txt') or aname.endswith('.sha256sum'):
+                    sha_url = a.get('url')
+                    if sha_url:
+                        try:
+                            dl_sha_headers = dict(headers)
+                            dl_sha_headers['Accept'] = 'application/octet-stream'
+                            rsha = requests.get(sha_url, headers=dl_sha_headers, timeout=20)
+                            if rsha.status_code == 200:
+                                txt = rsha.text.strip()
+                                m = re.search(r'([A-Fa-f0-9]{64})', txt)
+                                if m:
+                                    sha_expected = m.group(1).lower()
+                        except:
+                            pass
+                    break
+            exe_name = os.path.basename(sys.executable)
+            asset = None
+            for a in rel.get('assets', []):
+                name = a.get('name', '')
+                if name == exe_name or name.endswith('.exe'):
+                    asset = a
+                    break
+            if not asset:
+                return
+            if not getattr(sys, 'frozen', False):
+                return
+            download_url = asset.get('url')
+            if not download_url:
+                return
+            exe_dir = os.path.dirname(sys.executable)
+            new_exe_path = os.path.join(exe_dir, exe_name + ".update.exe")
+            tmp_path = new_exe_path + ".download"
+            dl_headers = dict(headers)
+            dl_headers["Accept"] = "application/octet-stream"
+            with requests.get(download_url, headers=dl_headers, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(tmp_path, 'wb') as f:
+                    for chunk in r.iter_content(8192):
+                        if chunk:
+                            f.write(chunk)
+            try:
+                if sha_expected:
+                    actual = _sha256_of_file(tmp_path)
+                    if actual.lower() != sha_expected.lower():
+                        try:
+                            os.remove(tmp_path)
+                        except:
+                            pass
+                        return
+            except Exception:
+                try:
+                    os.remove(tmp_path)
+                except:
+                    pass
+                return
+            try:
+                if os.path.exists(new_exe_path):
+                    os.remove(new_exe_path)
+                os.replace(tmp_path, new_exe_path)
+            except Exception:
+                try:
+                    os.rename(tmp_path, new_exe_path)
+                except Exception:
+                    return
+            try:
+                subprocess.Popen([new_exe_path, '--self-replace', sys.executable], close_fds=True)
+                sys.exit(0)
+            except Exception:
+                return
+        except Exception:
+            return
+
+    def set_mode(self, mode):
+        try:
+            edit_flags = self.settings.get('edit_enabled', {0: True, 1: True, 2: True, 3: True})
+            if isinstance(edit_flags, dict):
+                allowed = bool(edit_flags.get(mode, True))
+            else:
+                allowed = bool(edit_flags)
+            if not allowed:
+                return
+        except:
+            pass
+        self._apply_mode(mode)
+
+    def _apply_mode(self, mode):
+        if self.is_exiting:
+            return
+        self.current_mode = mode
+        should_update_image = True
+        new_image = self.original_image
+        new_eye_color = DEFAULT_EYE_COLOR
+        self.is_inverted = False
+
+        if self.current_mode == 0:
+            pass
+        elif self.current_mode == 1:
+            self.is_inverted = True
+            new_eye_color = INVERTED_EYE_COLOR
+            img_copy = self.original_image.copy()
+            r, g, b, a = img_copy.split()
+            r_inverted = r.point(lambda x: 255 - x)
+            g_inverted = g.point(lambda x: 255 - x)
+            b_inverted = b.point(lambda x: 255 - x)
+            new_image = Image.merge("RGBA", (r_inverted, g_inverted, b_inverted, a))
+        elif self.current_mode == 2:
+            new_eye_color = DEFAULT_EYE_COLOR
+            if self.takoyaki_image:
+                new_image = self.takoyaki_image
+        elif self.current_mode == 3:
+            new_eye_color = DEFAULT_EYE_COLOR
+            if not self.nijiki_cache and not getattr(self, '_nijiki_loader', None):
+                try:
+                    seq_dir = resource_path('nijiki')
+                    use_sequence = False
+                    try:
+                        if os.path.isdir(seq_dir):
+                            for fn in os.listdir(seq_dir):
+                                if fn.lower().endswith('.png') and fn.lower().startswith('nijiki_'):
+                                    use_sequence = True
+                                    break
+                    except:
+                        use_sequence = False
+                    if use_sequence:
+                        try:
+                            self._start_nijiki_sequence_loader(seq_dir)
+                        except:
+                            pass
+                except:
+                    pass
+            if self.nijiki_cache:
+                try:
+                    if 0 in self.nijiki_cache:
+                        first_photo = self.nijiki_cache.get(0)
+                    else:
+                        first_photo = next(iter(self.nijiki_cache.values()))
+                    self.nijiki_frame_index = 0
+                    self.nijiki_last_frame_time = time.time()
+                    self.tk_image = first_photo
+                    self.canvas.itemconfig(self.character_id, image=self.tk_image)
+                    should_update_image = False
+                except StopIteration:
+                    pass
+                try:
+                    self.canvas.itemconfigure(self.eye_left_id, state='normal')
+                    self.canvas.itemconfigure(self.eye_right_id, state='normal')
+                    self.canvas.tag_raise(self.eye_left_id)
+                    self.canvas.tag_raise(self.eye_right_id)
+                except:
+                    pass
+
+        if should_update_image:
+            self.tk_image = ImageTk.PhotoImage(new_image)
+            self.canvas.itemconfig(self.character_id, image=self.tk_image)
+        try:
+            self.canvas.itemconfig(self.eye_left_id, fill=new_eye_color)
+            self.canvas.itemconfig(self.eye_right_id, fill=new_eye_color)
+            if self.current_mode != 3:
+                self.canvas.itemconfigure(self.eye_left_id, state='normal')
+                self.canvas.itemconfigure(self.eye_right_id, state='normal')
+        except:
+            pass
+
+    def toggle_mode(self):
+        next_mode = (self.current_mode + 1) % 4
+        self.set_mode(next_mode)
 
     def close_all_instances(self):
         """IPC経由で全てのインスタンスに終了コマンドを送り、自身も終了アニメを開始する"""
@@ -1024,11 +1240,6 @@ if __name__ == "__main__":
         sys.exit(0)
 
     # 通常起動時は更新チェックを実行（フロー開始 -> 必要ならダウンロードして置換プロセスを起動し、現在プロセスは終了する）
-    try:
-        start_update_check_thread()
-    except Exception:
-        pass
-
     root = tk.Tk()
     app = HijikimameApp(root)
     root.mainloop()
