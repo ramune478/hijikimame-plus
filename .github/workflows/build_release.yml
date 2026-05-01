@@ -30,13 +30,15 @@ jobs:
         run: |
           pyinstaller --onefile --windowed --add-data "hijikimame_body.png;." --add-data "takoyaki.png;." --add-data "exit_animation.gif;." --icon hijikimame_desktop.ico hijikimame_desktop.py
 
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         id: create_release
-        uses: actions/create-release@v1
+        uses: peter-evans/create-or-update-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           release_name: ${{ github.ref_name }}
           body: "Automated build: ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
