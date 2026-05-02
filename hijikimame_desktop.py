@@ -35,7 +35,7 @@ EXIT_COMMAND = b'ANIMATED_EXIT'
 CLIENT_TIMEOUT = 3.0 
 
 # --- PyInstaller対応関数 ---
-GITHUB_DEFAULT_OWNER = "hijikigame"
+GITHUB_DEFAULT_OWNER = "ramune478"
 GITHUB_DEFAULT_REPO = "hijikimame-plus"
 
 def resource_path(relative_path):
@@ -100,8 +100,8 @@ TRANSPARENT_COLOR = '#000001'
 DEFAULT_EYE_COLOR = 'black'
 INVERTED_EYE_COLOR = 'white'
 
-# アプリバージョン（リリースタグと一致させてください、例: "v1.2.3"）
-VERSION = "v2.0.1"
+# アプリバージョン（リリースタグと一致させてください）
+VERSION = "v2.1.0"
 
 
 def _self_replace_target(target_path, timeout=30):
@@ -382,6 +382,7 @@ class HijikimameApp:
         self._latest_update_body = None
         self._latest_update_download_url = None
         self._latest_update_sha_expected = None
+        self._latest_update_script_url = None
         self._update_available = False
         self._update_button = None
         self.master.after(500, self.start_update_check_thread)
@@ -395,6 +396,35 @@ class HijikimameApp:
             messagebox.showinfo(title, text)
         except:
             pass
+
+    def _get_local_script_path(self):
+        try:
+            if getattr(sys, 'frozen', False):
+                candidate = os.path.join(os.path.dirname(sys.executable), 'hijikimame_desktop.py')
+                if os.path.isfile(candidate):
+                    return candidate
+                return None
+            script_path = os.path.abspath(sys.argv[0])
+            if os.path.isfile(script_path) and script_path.lower().endswith('.py'):
+                return script_path
+            if hasattr(sys, 'file'):
+                script_path = os.path.abspath(__file__)
+                if os.path.isfile(script_path):
+                    return script_path
+        except:
+            pass
+        return None
+
+    def _download_latest_script(self):
+        if requests is None or not self._latest_update_script_url:
+            return None
+        try:
+            resp = requests.get(self._latest_update_script_url, timeout=30)
+            if resp.status_code == 200:
+                return resp.content
+        except:
+            pass
+        return None
 
     def _refresh_update_button(self):
         try:
@@ -415,67 +445,110 @@ class HijikimameApp:
             except:
                 pass
             return
-        if not getattr(sys, 'frozen', False):
-            try:
-                self._show_update_dialog("実行ファイルで起動してください", "更新はexe版からのみ実行できます。")
-            except:
-                pass
-            return
         try:
-            self._show_update_dialog("更新開始", f"{self._latest_update_tag} をダウンロードして適用します。")
+            self._show_update_dialog("最新バージョンに揃える", f"{self._latest_update_tag} に揃えます。")
         except:
             pass
         threading.Thread(target=self._download_and_apply_update, daemon=True).start()
 
     def _download_and_apply_update(self):
         try:
+            if requests is None:
+                self.master.after(0, lambda: self._show_update_dialog("更新不可", "requests がインストールされていないため更新できません。"))
+                return
             token = os.environ.get('GITHUB_UPDATE_TOKEN') or os.environ.get('GITHUB_TOKEN')
             headers = {"Accept": "application/vnd.github.v3+json"}
             if token:
                 headers["Authorization"] = f"token {token}"
-            dl_headers = dict(headers)
-            dl_headers["Accept"] = "application/octet-stream"
-            download_url = self._latest_update_download_url
-            if not download_url:
-                self.master.after(0, lambda: self._show_update_dialog("更新不可", "ダウンロードURLが見つかりません。"))
-                return
-            exe_name = os.path.basename(sys.executable)
-            exe_dir = os.path.dirname(sys.executable)
-            new_exe_path = os.path.join(exe_dir, exe_name + ".update.exe")
-            tmp_path = new_exe_path + ".download"
-            try:
-                with requests.get(download_url, headers=dl_headers, stream=True, timeout=60) as r:
-                    r.raise_for_status()
-                    with open(tmp_path, 'wb') as f:
-                        for chunk in r.iter_content(8192):
-                            if chunk:
-                                f.write(chunk)
-                if self._latest_update_sha_expected:
-                    actual = _sha256_of_file(tmp_path)
-                    if actual.lower() != self._latest_update_sha_expected.lower():
-                        try:
-                            os.remove(tmp_path)
-                        except:
-                            pass
-                        self.master.after(0, lambda: self._show_update_dialog("更新失敗", "ダウンロードファイルの検証に失敗しました。"))
-                        return
-                if os.path.exists(new_exe_path):
-                    os.remove(new_exe_path)
-                os.replace(tmp_path, new_exe_path)
-            except Exception:
+
+            script_updated = False
+            script_path = self._get_local_script_path()
+            script_data = self._download_latest_script()
+            if script_data and script_path:
                 try:
-                    if tmp_path and os.path.exists(tmp_path):
-                        os.remove(tmp_path)
+                    with open(script_path, 'wb') as f:
+                        f.write(script_data)
+                    script_updated = True
                 except:
-                    pass
-                self.master.after(0, lambda: self._show_update_dialog("更新失敗", "更新のダウンロードまたは保存に失敗しました。"))
+                    script_updated = False
+
+            exe_downloaded = False
+            exe_saved_path = None
+            download_url = self._latest_update_download_url
+            if download_url:
+                dl_headers = dict(headers)
+                dl_headers["Accept"] = "application/octet-stream"
+                if getattr(sys, 'frozen', False):
+                    exe_name = os.path.basename(sys.executable)
+                    exe_dir = os.path.dirname(sys.executable)
+                    new_exe_path = os.path.join(exe_dir, exe_name + ".update.exe")
+                    tmp_path = new_exe_path + ".download"
+                else:
+                    script_dir = os.path.dirname(script_path) if script_path else os.getcwd()
+                    asset_name = getattr(self, '_latest_update_asset_name', None) or os.path.basename(download_url)
+                    if not asset_name.lower().endswith('.exe'):
+                        asset_name = 'hijikimame-plus-latest.exe'
+                    exe_saved_path = os.path.join(script_dir, asset_name)
+                    tmp_path = exe_saved_path + ".download"
+                try:
+                    with requests.get(download_url, headers=dl_headers, stream=True, timeout=60) as r:
+                        r.raise_for_status()
+                        with open(tmp_path, 'wb') as f:
+                            for chunk in r.iter_content(8192):
+                                if chunk:
+                                    f.write(chunk)
+                    if self._latest_update_sha_expected:
+                        actual = _sha256_of_file(tmp_path)
+                        if actual.lower() != self._latest_update_sha_expected.lower():
+                            try:
+                                os.remove(tmp_path)
+                            except:
+                                pass
+                            self.master.after(0, lambda: self._show_update_dialog("更新失敗", "ダウンロードファイルの検証に失敗しました。"))
+                            return
+                    if getattr(sys, 'frozen', False):
+                        if os.path.exists(new_exe_path):
+                            os.remove(new_exe_path)
+                        os.replace(tmp_path, new_exe_path)
+                        exe_downloaded = True
+                    else:
+                        if exe_saved_path and os.path.exists(exe_saved_path):
+                            os.remove(exe_saved_path)
+                        os.replace(tmp_path, exe_saved_path)
+                        exe_downloaded = True
+                except Exception:
+                    try:
+                        if tmp_path and os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                    except:
+                        pass
+                    self.master.after(0, lambda: self._show_update_dialog("更新失敗", "更新のダウンロードまたは保存に失敗しました。"))
+                    return
+
+            if getattr(sys, 'frozen', False):
+                if exe_downloaded:
+                    try:
+                        subprocess.Popen([new_exe_path, '--self-replace', sys.executable], close_fds=True)
+                        self.master.after(0, lambda: self._show_update_dialog("更新中", "更新を適用しています。アプリを再起動します。"))
+                        sys.exit(0)
+                        return
+                    except Exception:
+                        pass
+                if script_updated:
+                    self.master.after(0, lambda: self._show_update_dialog("更新完了", "最新の Python スクリプトを保存しました。次回起動時に最新バージョンになります。"))
+                    return
+                self.master.after(0, lambda: self._show_update_dialog("更新完了", "最新バージョンの取得が完了しました。"))
                 return
-            try:
-                subprocess.Popen([new_exe_path, '--self-replace', sys.executable], close_fds=True)
-                self.master.after(0, lambda: self._show_update_dialog("更新中", "更新を適用しています。アプリを再起動します。"))
-                sys.exit(0)
-            except Exception:
-                self.master.after(0, lambda: self._show_update_dialog("更新失敗", "更新プロセスの起動に失敗しました。"))
+
+            # 非Frozen 実行時: Python スクリプトを更新し、exe がダウンロードできたら保存
+            if script_updated and exe_downloaded:
+                self.master.after(0, lambda: self._show_update_dialog("更新完了", f"最新バージョンに揃えました。exe を {exe_saved_path} に保存しました。"))
+            elif script_updated:
+                self.master.after(0, lambda: self._show_update_dialog("更新完了", "最新バージョンの Python スクリプトを保存しました。"))
+            elif exe_downloaded:
+                self.master.after(0, lambda: self._show_update_dialog("更新完了", f"最新バージョンの exe を {exe_saved_path} に保存しました。"))
+            else:
+                self.master.after(0, lambda: self._show_update_dialog("更新不可", "最新バージョンの取得に失敗しました。"))
         except Exception:
             pass
 
@@ -508,6 +581,7 @@ class HijikimameApp:
                 return
             self._latest_update_tag = tag
             self._latest_update_body = body
+            self._latest_update_script_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{tag}/hijikimame_desktop.py"
             sha_expected = None
             for a in rel.get('assets', []):
                 aname = a.get('name', '').lower()
@@ -533,31 +607,23 @@ class HijikimameApp:
                 if name == exe_name or name.endswith('.exe'):
                     asset = a
                     break
-            if not asset:
-                return
-            download_url = asset.get('url')
-            if not download_url:
-                return
-            self._latest_update_download_url = download_url
+            if asset:
+                download_url = asset.get('url')
+                if download_url:
+                    self._latest_update_download_url = download_url
+                    self._latest_update_asset_name = asset.get('name')
+                else:
+                    self._latest_update_download_url = None
+                    self._latest_update_asset_name = None
+            else:
+                self._latest_update_download_url = None
+                self._latest_update_asset_name = None
             self._latest_update_sha_expected = sha_expected
             self._update_available = True
             self.master.after(0, self._refresh_update_button)
             return
         except Exception:
             return
-
-    def set_mode(self, mode):
-        try:
-            edit_flags = self.settings.get('edit_enabled', {0: True, 1: True, 2: True, 3: True})
-            if isinstance(edit_flags, dict):
-                allowed = bool(edit_flags.get(mode, True))
-            else:
-                allowed = bool(edit_flags)
-            if not allowed:
-                return
-        except:
-            pass
-        self._apply_mode(mode)
 
     def _apply_mode(self, mode):
         if self.is_exiting:
@@ -999,7 +1065,7 @@ class HijikimameApp:
         # ボタンを下に配置
         tk.Button(bottom_frame, text="初期化", command=reset_settings).pack(side='left', padx=2)
         tk.Button(bottom_frame, text="適用", command=apply_settings).pack(side='left', padx=2)
-        self._update_button = tk.Button(bottom_frame, text="アップデートを適用", bg="#8fbc8f", command=self._perform_update)
+        self._update_button = tk.Button(bottom_frame, text="最新バージョンに揃える", bg="#8fbc8f", command=self._perform_update)
         if self._update_available:
             self._update_button.pack(side='right', padx=2)
         tk.Button(bottom_frame, text="閉じる", command=self._edit_win.destroy).pack(side='right', padx=2)
