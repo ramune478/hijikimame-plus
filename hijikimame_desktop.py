@@ -101,7 +101,7 @@ DEFAULT_EYE_COLOR = 'black'
 INVERTED_EYE_COLOR = 'white'
 
 # アプリバージョン（リリースタグと一致させてください）
-VERSION = "v2.1.3"
+VERSION = "v2.1.4"
 
 
 def _self_replace_target(target_path, timeout=30):
