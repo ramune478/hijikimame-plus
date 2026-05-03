@@ -1,6 +1,6 @@
 import tkinter as tk
-from tkinter import messagebox
-from PIL import Image, ImageTk
+from tkinter import messagebox, filedialog
+from PIL import Image, ImageTk, ImageGrab, ImageChops
 import collections
 try:
     Image.MAX_IMAGE_PIXELS = None
@@ -101,7 +101,7 @@ DEFAULT_EYE_COLOR = 'black'
 INVERTED_EYE_COLOR = 'white'
 
 # アプリバージョン（リリースタグと一致させてください）
-VERSION = "v2.1.0"
+VERSION = "v2.1.1"
 
 
 def _self_replace_target(target_path, timeout=30):
@@ -271,11 +271,15 @@ class HijikimameApp:
         
         # --- UI初期設定 ---
         master.title("ひじき豆")
+        try:
+            master.iconbitmap(resource_path('hijikimame_desktop.ico'))
+        except:
+            pass
         master.overrideredirect(True)
         master.wm_attributes("-transparentcolor", TRANSPARENT_COLOR) 
 
         self.settings = {
-            'edit_enabled': {0: True, 1: True, 2: True, 3: True},
+            'selected_mode': 0,
             'nijiki_fps': NIJIKI_DEFAULT_FPS,
             'nijiki_cache_size': NIJIKI_CACHE_SIZE_DEFAULT,
             'nijiki_max_frames': NIJIKI_MAX_FRAMES_DEFAULT,
@@ -306,11 +310,34 @@ class HijikimameApp:
 
         self.current_mode = 0 
         self.is_inverted = False
+        self.target_position = None
+        self.target_image_path = None
+        self.target_image_template = None
+        self.target_image_last_search = 0.0
+
+        self.settings.setdefault('tracking_target_mode', 0)
+        self.settings.setdefault('target_position', None)
+        self.settings.setdefault('target_image_path', None)
+        self.settings.setdefault('selected_mode', 0)
+
+        if isinstance(self.settings.get('target_position'), list) and len(self.settings.get('target_position')) == 2:
+            try:
+                self.target_position = (int(self.settings['target_position'][0]), int(self.settings['target_position'][1]))
+            except:
+                self.target_position = None
+        if self.settings.get('target_image_path'):
+            self.target_image_path = self.settings.get('target_image_path')
+            try:
+                self.target_image_template = self.load_image(self.target_image_path)
+            except:
+                self.target_image_template = None
 
         self.original_image_path = resource_path("hijikimame_body.png") 
         self.original_image = self.load_image(self.original_image_path)
         self.takoyaki_image_path = resource_path(TAKOYAKI_IMAGE_PATH)
         self.takoyaki_image = self.load_image(self.takoyaki_image_path)
+        self.extra_image_path = resource_path('3.png')
+        self.extra_image = self.load_image(self.extra_image_path)
         
         if self.original_image is None:
             master.destroy()
@@ -368,6 +395,7 @@ class HijikimameApp:
         except:
             pass
 
+        self.set_mode(self.settings.get('selected_mode', 0), save=False)
         self.update_position()
         
         self.canvas.bind("<Button-1>", self.start_drag_stop)
@@ -446,7 +474,9 @@ class HijikimameApp:
                 pass
             return
         try:
-            self._show_update_dialog("最新バージョンに揃える", f"{self._latest_update_tag} に揃えます。")
+            release_notes = self._latest_update_body or '更新内容はありません。'
+            message = f"{self._latest_update_tag} に揃えます。\n\n変更内容:\n{release_notes}"
+            self._show_update_dialog("最新バージョンに揃える", message)
         except:
             pass
         threading.Thread(target=self._download_and_apply_update, daemon=True).start()
@@ -783,24 +813,31 @@ class HijikimameApp:
             return None
         return im
 
-    def toggle_mode(self): 
-        if self.is_exiting: return
-        ef = self.settings.get('edit_enabled', {0: True, 1: True, 2: True, 3: True})
-        next_mode = (self.current_mode + 1) % 4
-        if isinstance(ef, dict):
-            allowed = ef.get(next_mode, True)
-        else:
-            allowed = bool(ef)
-        if not allowed:
+    def set_mode(self, mode, save=True):
+        if self.is_exiting:
             return
-        self.current_mode = next_mode
-        
+        try:
+            mode = int(mode)
+        except:
+            return
+        if mode < 0:
+            return
+        self.current_mode = mode
+        self.settings['selected_mode'] = mode
+        if save:
+            self.save_settings_file()
+        try:
+            self._refresh_character_buttons()
+        except:
+            pass
+
         should_update_image = True
         new_image = self.original_image
         new_eye_color = DEFAULT_EYE_COLOR
-        self.is_inverted = False 
+        self.is_inverted = False
 
-        if self.current_mode == 0: pass 
+        if self.current_mode == 0:
+            pass
         elif self.current_mode == 1:
             self.is_inverted = True
             new_eye_color = INVERTED_EYE_COLOR
@@ -811,9 +848,8 @@ class HijikimameApp:
             b_inverted = b.point(lambda x: 255 - x)
             new_image = Image.merge("RGBA", (r_inverted, g_inverted, b_inverted, a))
         elif self.current_mode == 2:
-            new_eye_color = DEFAULT_EYE_COLOR
             if self.takoyaki_image:
-                new_image = self.takoyaki_image 
+                new_image = self.takoyaki_image
         elif self.current_mode == 3:
             new_eye_color = DEFAULT_EYE_COLOR
             if not self.nijiki_cache and not getattr(self, '_nijiki_loader', None):
@@ -855,10 +891,13 @@ class HijikimameApp:
                     self.canvas.tag_raise(self.eye_right_id)
                 except:
                     pass
+        elif self.current_mode == 4:
+            if self.extra_image:
+                new_image = self.extra_image
 
         if should_update_image:
-             self.tk_image = ImageTk.PhotoImage(new_image)
-             self.canvas.itemconfig(self.character_id, image=self.tk_image)
+            self.tk_image = ImageTk.PhotoImage(new_image)
+            self.canvas.itemconfig(self.character_id, image=self.tk_image)
         try:
             self.canvas.itemconfig(self.eye_left_id, fill=new_eye_color)
             self.canvas.itemconfig(self.eye_right_id, fill=new_eye_color)
@@ -867,6 +906,11 @@ class HijikimameApp:
                 self.canvas.itemconfigure(self.eye_right_id, state='normal')
         except:
             pass
+
+    def toggle_mode(self):
+        if self.is_exiting:
+            return
+        self.set_mode((self.current_mode + 1) % 5)
 
     def load_gif_frames(self, path):
         frames = []
@@ -917,23 +961,6 @@ class HijikimameApp:
             return
         if not files:
             return
-        self.nijiki_cache.clear()
-        for i, fname in enumerate(files):
-            try:
-                p = os.path.join(dir_path, fname)
-                im = Image.open(p).convert('RGBA')
-                try:
-                    if hasattr(self, 'image_width') and hasattr(self, 'image_height'):
-                        target_w, target_h = self.image_width, self.image_height
-                        fw, fh = im.size
-                        if fw > target_w or fh > target_h:
-                            im.thumbnail((target_w, target_h), Image.LANCZOS)
-                except:
-                    pass
-                photo = ImageTk.PhotoImage(im)
-                self.nijiki_cache[i] = photo
-            except:
-                pass
         self.nijiki_indices = list(range(len(self.nijiki_cache)))
         if self.nijiki_cache:
             try:
@@ -944,6 +971,203 @@ class HijikimameApp:
                 self.canvas.itemconfig(self.character_id, image=self.tk_image)
             except:
                 pass
+
+    def _get_tracking_target_mode_display(self):
+        mode = int(self.settings.get('tracking_target_mode', 0))
+        if mode == 1:
+            return '追尾先: 指定位置'
+        if mode == 2:
+            return '追尾先: 画像'
+        return '追尾先: マウス'
+
+    def _get_target_status_text(self):
+        mode = int(self.settings.get('tracking_target_mode', 0))
+        if mode == 1:
+            if self.target_position:
+                return f'選択位置: {self.target_position[0]}, {self.target_position[1]}'
+            return '選択位置: なし'
+        if mode == 2:
+            label = f'画像: {os.path.basename(self.target_image_path)}' if self.target_image_path else '画像: なし'
+            if self.target_position:
+                label += f' (現在: {self.target_position[0]}, {self.target_position[1]})'
+            return label
+        return 'マウス位置を追尾します'
+
+    def _update_target_status_labels(self):
+        try:
+            if hasattr(self, '_target_mode_label'):
+                self._target_mode_label.config(text=self._get_tracking_target_mode_display())
+            if hasattr(self, '_target_status_label'):
+                self._target_status_label.config(text=self._get_target_status_text())
+        except:
+            pass
+
+    def _refresh_character_buttons(self):
+        try:
+            for mi, btn in getattr(self, '_character_buttons', {}).items():
+                if mi == self.current_mode:
+                    btn.config(relief='sunken', bg='#d0f0c0')
+                else:
+                    btn.config(relief='raised', bg='SystemButtonFace')
+        except:
+            pass
+
+    def request_target_position_selection(self):
+        try:
+            if hasattr(self, '_target_overlay') and self._target_overlay.winfo_exists():
+                return
+        except:
+            pass
+        try:
+            self._target_overlay = tk.Toplevel(self.master)
+            self._target_overlay.overrideredirect(True)
+            self._target_overlay.attributes('-alpha', 0.2)
+            self._target_overlay.attributes('-topmost', True)
+            self._target_overlay.attributes('-fullscreen', True)
+            self._target_overlay.configure(bg='black')
+            label = tk.Label(self._target_overlay, text='追跡する場所をクリックしてください\nESCでキャンセル', bg='black', fg='white', font=('Arial', 18))
+            label.pack(expand=True)
+            self._target_overlay.bind('<Button-1>', self._on_target_position_selected)
+            self._target_overlay.bind('<Escape>', lambda e: self._cancel_target_position_selection())
+            self._target_overlay.focus_force()
+        except:
+            pass
+
+    def _on_target_position_selected(self, event):
+        try:
+            x = event.x_root
+            y = event.y_root
+            self.target_position = (x, y)
+            self.settings['target_position'] = [x, y]
+            self.settings['tracking_target_mode'] = 1
+            self._update_target_status_labels()
+            self.save_settings_file()
+            self.broadcast_settings()
+        except:
+            pass
+        self._cancel_target_position_selection()
+
+    def _cancel_target_position_selection(self):
+        try:
+            if hasattr(self, '_target_overlay') and self._target_overlay.winfo_exists():
+                self._target_overlay.destroy()
+        except:
+            pass
+
+    def choose_target_image(self):
+        try:
+            filename = filedialog.askopenfilename(parent=self.master, title='追跡する画像を選択', filetypes=[('画像ファイル', '*.png;*.jpg;*.jpeg;*.bmp;*.gif'), ('すべて', '*.*')])
+            if not filename:
+                return
+            template = self.load_image(filename)
+            if template is None:
+                raise Exception('invalid image')
+            self.target_image_template = template
+            self.target_image_path = filename
+            self.settings['target_image_path'] = filename
+            self.settings['tracking_target_mode'] = 2
+            self.settings['target_position'] = None
+            self.target_position = None
+            self.target_image_last_search = 0.0
+            self._search_target_image_on_screen(force=True)
+            self._update_target_status_labels()
+            self.save_settings_file()
+            self.broadcast_settings()
+        except Exception:
+            try:
+                messagebox.showerror('画像選択エラー', '指定したファイルを読み込めませんでした。')
+            except:
+                pass
+
+    def _grab_screen(self):
+        try:
+            if ImageGrab is None:
+                return None
+            return ImageGrab.grab()
+        except:
+            return None
+
+    def _search_target_image_on_screen(self, force=False):
+        if self.target_image_template is None:
+            return
+        now = time.time()
+        if not force and now - self.target_image_last_search < 2.0:
+            return
+        self.target_image_last_search = now
+        screen = self._grab_screen()
+        if screen is None:
+            return
+        result = self._find_template_on_screen(screen, self.target_image_template)
+        if result:
+            x, y, score = result
+            self.target_position = (x, y)
+            self.settings['target_position'] = [x, y]
+        else:
+            self.target_position = None
+        self._update_target_status_labels()
+
+    def _find_template_on_screen(self, screen, template):
+        try:
+            screen_gray = screen.convert('L')
+            template_gray = template.convert('L')
+            sw, sh = screen_gray.size
+            tw, th = template_gray.size
+            if tw > sw or th > sh:
+                return None
+            scale = 1.0
+            if sw > 800 or sh > 800:
+                scale = max(sw / 800.0, sh / 800.0)
+                screen_gray = screen_gray.resize((max(1, int(sw / scale)), max(1, int(sh / scale))), Image.LANCZOS)
+                template_gray = template_gray.resize((max(1, int(tw / scale)), max(1, int(th / scale))), Image.LANCZOS)
+            tw2, th2 = template_gray.size
+            if tw2 < 8 or th2 < 8:
+                return None
+            step = max(1, min(16, tw2 // 4, th2 // 4, 12))
+            small_template = template_gray.resize((64, 64), Image.LANCZOS)
+            best_score = None
+            best_xy = None
+            for y in range(0, screen_gray.height - th2 + 1, step):
+                for x in range(0, screen_gray.width - tw2 + 1, step):
+                    patch = screen_gray.crop((x, y, x + tw2, y + th2)).resize((64, 64), Image.LANCZOS)
+                    diff = ImageChops.difference(patch, small_template)
+                    score = sum(diff.getdata())
+                    if best_score is None or score < best_score:
+                        best_score = score
+                        best_xy = (x, y)
+            if best_xy is None:
+                return None
+            bx, by = best_xy
+            return int(bx * scale + tw / 2), int(by * scale + th / 2), best_score
+        except:
+            return None
+
+    def toggle_tracking_target_mode(self):
+        try:
+            mode = int(self.settings.get('tracking_target_mode', 0))
+            for _ in range(3):
+                mode = (mode + 1) % 3
+                if mode == 1 and self.target_position is None:
+                    continue
+                if mode == 2 and (self.target_image_template is None or not self.target_image_path):
+                    continue
+                break
+            self.settings['tracking_target_mode'] = mode
+            if mode == 2:
+                self._search_target_image_on_screen(force=True)
+            self._update_target_status_labels()
+            self.save_settings_file()
+            self.broadcast_settings()
+        except:
+            pass
+
+    def clear_target_tracking(self):
+        try:
+            self.settings['tracking_target_mode'] = 0
+            self._update_target_status_labels()
+            self.save_settings_file()
+            self.broadcast_settings()
+        except:
+            pass
 
     # --- 編集ウィンドウ ---
     def open_edit_window(self, event=None):
@@ -956,31 +1180,55 @@ class HijikimameApp:
 
         self._edit_win = tk.Toplevel(self.master)
         self._edit_win.title("ひじき豆 - settings")
+        try:
+            self._edit_win.iconbitmap(resource_path('hijikimame_desktop.ico'))
+        except:
+            pass
         self._edit_win.attributes('-topmost', True)
 
         # 最上部: 操作ボタンフレーム (擬人化ボタンなど)
         try:
             top_btn_frame = tk.Frame(self._edit_win)
             top_btn_frame.pack(fill='x', pady=5)
-            tk.Button(top_btn_frame, text="モード切替", command=self.toggle_mode).pack(side='left', padx=5)
+            tk.Button(top_btn_frame, text="キャラ切替", command=self.toggle_mode).pack(side='left', padx=5)
+            tk.Button(top_btn_frame, text="追尾先切替", command=self.toggle_tracking_target_mode).pack(side='left', padx=5)
+            tk.Button(top_btn_frame, text="場所選択", command=self.request_target_position_selection).pack(side='left', padx=5)
+            tk.Button(top_btn_frame, text="画像追跡設定", command=self.choose_target_image).pack(side='left', padx=5)
+            tk.Button(top_btn_frame, text="追尾解除", command=self.clear_target_tracking).pack(side='left', padx=5)
         except:
             pass
 
-        # 各モードごとの編集有効フラグ
-        mode_names = {0: 'ひじき豆', 1: 'ろず', 2: 'たこ焼き', 3: '虹き豆'}
-        edit_vars = {}
-        current_flags = self.settings.get('edit_enabled', {0: True, 1: True, 2: True, 3: True})
-        for mi in range(4):
-            if isinstance(current_flags, dict):
-                val = 1 if current_flags.get(mi, True) else 0
-            else:
-                val = 1 if bool(current_flags) else 0
-            iv = tk.IntVar(value=val)
-            edit_vars[mi] = iv
-            def make_cb(i, v):
-                return tk.Checkbutton(self._edit_win, text=f"{mode_names[i]} に変更可能", variable=v)
-            cb = make_cb(mi, iv)
-            cb.pack(anchor='w', padx=8, pady=2)
+        self._target_mode_label = tk.Label(self._edit_win, text=self._get_tracking_target_mode_display())
+        self._target_mode_label.pack(anchor='w', padx=8, pady=2)
+        self._target_status_label = tk.Label(self._edit_win, text=self._get_target_status_text())
+        self._target_status_label.pack(anchor='w', padx=8, pady=2)
+
+        # キャラクター選択
+        char_frame = tk.LabelFrame(self._edit_win, text='キャラクター選択')
+        char_frame.pack(fill='both', padx=8, pady=5, expand=True)
+        char_canvas = tk.Canvas(char_frame, borderwidth=0, highlightthickness=0, height=200)
+        char_scroll = tk.Scrollbar(char_frame, orient='vertical', command=char_canvas.yview)
+        char_container = tk.Frame(char_canvas)
+        char_container.bind('<Configure>', lambda e: char_canvas.configure(scrollregion=char_canvas.bbox('all')))
+        char_canvas.create_window((0, 0), window=char_container, anchor='nw')
+        char_canvas.configure(yscrollcommand=char_scroll.set)
+        char_canvas.pack(side='left', fill='both', expand=True)
+        char_scroll.pack(side='right', fill='y')
+
+        self._character_buttons = {}
+        mode_names = {
+            0: '1. ひじき豆',
+            1: '2. ろず',
+            2: '3. たこ焼き',
+            3: '4. 虹き豆',
+            4: '5. 追加キャラ'
+        }
+        for mi in range(5):
+            btn = tk.Button(char_container, text=mode_names.get(mi, f'{mi+1}'), width=20,
+                            command=lambda m=mi: self.set_mode(m))
+            btn.pack(anchor='w', padx=4, pady=2)
+            self._character_buttons[mi] = btn
+        self._refresh_character_buttons()
 
         repulsion_var = tk.IntVar(value=1 if self.settings.get('mouse_repulsion_enabled', True) else 0)
         repulsion_cb = tk.Checkbutton(self._edit_win, text="ひじき豆の反発", variable=repulsion_var)
@@ -1017,13 +1265,6 @@ class HijikimameApp:
         nijiki_scale.pack(fill='x', padx=8)
 
         def apply_settings():
-            try:
-                edit_dict = {}
-                for mi, iv in edit_vars.items():
-                    edit_dict[int(mi)] = bool(iv.get())
-                self.settings['edit_enabled'] = edit_dict
-            except:
-                pass
             self.settings['nijiki_fps'] = int(nijiki_scale.get())
             self.settings['mouse_repulsion_enabled'] = bool(repulsion_var.get())
             self.settings['tracking_speed'] = float(tracking_scale.get())
@@ -1033,10 +1274,14 @@ class HijikimameApp:
             self.settings['edge_bounce_strength'] = float(bounce_strength_scale.get())
             if not self.is_dragging_stop and self.throw_cooldown == 0:
                 self.remaining_bounces = self.settings.get('edge_bounce_count', EDGE_BOUNCE_COUNT_DEFAULT)
-            try: self.save_settings_file()
-            except: pass
-            try: self.broadcast_settings()
-            except: pass
+            try:
+                self.save_settings_file()
+            except:
+                pass
+            try:
+                self.broadcast_settings()
+            except:
+                pass
 
         # 下部ボタンエリア
         bottom_frame = tk.Frame(self._edit_win)
@@ -1051,7 +1296,8 @@ class HijikimameApp:
             self.settings['edge_bounce_count'] = EDGE_BOUNCE_COUNT_DEFAULT
             self.settings['edge_bounce_strength'] = EDGE_BOUNCE_STRENGTH
             self.settings['mouse_repulsion_enabled'] = True
-            self.settings['edit_enabled'] = {0: True, 1: True, 2: True, 3: True}
+            self.settings['selected_mode'] = 0
+            self.current_mode = 0
             nijiki_scale.set(NIJIKI_DEFAULT_FPS)
             tracking_scale.set(TRACKING_SPEED)
             throw_scale.set(2.5)
@@ -1059,7 +1305,11 @@ class HijikimameApp:
             bounce_scale.set(EDGE_BOUNCE_COUNT_DEFAULT)
             bounce_strength_scale.set(EDGE_BOUNCE_STRENGTH)
             repulsion_var.set(1)
-            for mi, iv in edit_vars.items(): iv.set(1)
+            try:
+                self._refresh_character_buttons()
+            except:
+                pass
+            self.set_mode(0)
             apply_settings()
 
         # ボタンを下に配置
@@ -1083,6 +1333,9 @@ class HijikimameApp:
 
     def apply_remote_settings(self, settings_dict):
         try:
+            settings_dict = dict(settings_dict)
+            if 'edit_enabled' in settings_dict:
+                settings_dict.pop('edit_enabled', None)
             for k, v in settings_dict.items():
                 self.settings[k] = v
             self.remaining_bounces = int(self.settings.get('edge_bounce_count', EDGE_BOUNCE_COUNT_DEFAULT))
@@ -1106,8 +1359,11 @@ class HijikimameApp:
 
     def save_settings_file(self):
         try:
+            settings_to_save = dict(self.settings)
+            if 'edit_enabled' in settings_to_save:
+                settings_to_save.pop('edit_enabled', None)
             with open(resource_path(SETTINGS_FILE), 'w', encoding='utf-8') as f:
-                json.dump(self.settings, f, ensure_ascii=False, indent=2)
+                json.dump(settings_to_save, f, ensure_ascii=False, indent=2)
         except:
             pass
 
@@ -1186,9 +1442,19 @@ class HijikimameApp:
         mouse_ay = mouse_vy - prev_vy
         mouse_a_mag = math.hypot(mouse_ax, mouse_ay)
 
+        target_mode = int(self.settings.get('tracking_target_mode', 0))
+        if target_mode == 2:
+            self._search_target_image_on_screen()
+        if target_mode == 1 and self.target_position:
+            target_x, target_y = self.target_position
+        elif target_mode == 2 and self.target_position:
+            target_x, target_y = self.target_position
+        else:
+            target_x, target_y = mouse_x, mouse_y
+
         char_center_x = self.x + self.image_width // 2
         char_center_y = self.y + self.image_height // 2
-        dx_char = mouse_x - char_center_x; dy_char = mouse_y - char_center_y
+        dx_char = target_x - char_center_x; dy_char = target_y - char_center_y
         distance = math.hypot(dx_char, dy_char)
 
         # If the user is holding the character, follow cursor as before
