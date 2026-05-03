@@ -38,7 +38,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           release_name: ${{ github.ref_name }}
-          body: "Release ${{ github.ref_name }}\n\n 追尾機能の拡張や、キャラ追加、エディタの設定の一部変更を行いました。"
+          body: "Release ${{ github.ref_name }}\n\n バグ修正。"
           draft: false
           prerelease: false
 
