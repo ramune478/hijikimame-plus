@@ -101,7 +101,7 @@ DEFAULT_EYE_COLOR = 'black'
 INVERTED_EYE_COLOR = 'white'
 
 # アプリバージョン（リリースタグと一致させてください）
-VERSION = "v2.1.1"
+VERSION = "v2.1.2"
 
 
 def _self_replace_target(target_path, timeout=30):
@@ -314,6 +314,7 @@ class HijikimameApp:
         self.target_image_path = None
         self.target_image_template = None
         self.target_image_last_search = 0.0
+        self._target_image_search_in_progress = False
 
         self.settings.setdefault('tracking_target_mode', 0)
         self.settings.setdefault('target_position', None)
@@ -331,6 +332,11 @@ class HijikimameApp:
                 self.target_image_template = self.load_image(self.target_image_path)
             except:
                 self.target_image_template = None
+            if self.target_image_template is None:
+                self.target_image_path = None
+                self.settings['target_image_path'] = None
+                if int(self.settings.get('tracking_target_mode', 0)) == 2:
+                    self.settings['tracking_target_mode'] = 0
 
         self.original_image_path = resource_path("hijikimame_body.png") 
         self.original_image = self.load_image(self.original_image_path)
@@ -404,6 +410,8 @@ class HijikimameApp:
         
         self.master.bind("<Control-h>", lambda e: self.start_exit_animation())
         self.master.bind("<Control-r>", lambda e: self.toggle_mode()) 
+        self.master.bind("<Control-e>", lambda e: self.open_edit_window())
+        self.master.bind("<Control-E>", lambda e: self.open_edit_window())
         
         self.master.after(100, self._check_ipc_command)
         self._latest_update_tag = None
@@ -733,10 +741,6 @@ class HijikimameApp:
         except:
             pass
 
-    def toggle_mode(self):
-        next_mode = (self.current_mode + 1) % 4
-        self.set_mode(next_mode)
-
     def close_all_instances(self):
         """IPC経由で全てのインスタンスに終了コマンドを送り、自身も終了アニメを開始する"""
         try:
@@ -961,6 +965,23 @@ class HijikimameApp:
             return
         if not files:
             return
+        self.nijiki_cache.clear()
+        for i, fname in enumerate(files):
+            try:
+                p = os.path.join(dir_path, fname)
+                im = Image.open(p).convert('RGBA')
+                try:
+                    if hasattr(self, 'image_width') and hasattr(self, 'image_height'):
+                        target_w, target_h = self.image_width, self.image_height
+                        fw, fh = im.size
+                        if fw > target_w or fh > target_h:
+                            im.thumbnail((target_w, target_h), Image.LANCZOS)
+                except:
+                    pass
+                photo = ImageTk.PhotoImage(im)
+                self.nijiki_cache[i] = photo
+            except:
+                pass
         self.nijiki_indices = list(range(len(self.nijiki_cache)))
         if self.nijiki_cache:
             try:
@@ -1019,15 +1040,18 @@ class HijikimameApp:
         except:
             pass
         try:
+            screen_w = self.master.winfo_screenwidth()
+            screen_h = self.master.winfo_screenheight()
             self._target_overlay = tk.Toplevel(self.master)
             self._target_overlay.overrideredirect(True)
             self._target_overlay.attributes('-alpha', 0.2)
             self._target_overlay.attributes('-topmost', True)
-            self._target_overlay.attributes('-fullscreen', True)
+            self._target_overlay.geometry(f'{screen_w}x{screen_h}+0+0')
             self._target_overlay.configure(bg='black')
             label = tk.Label(self._target_overlay, text='追跡する場所をクリックしてください\nESCでキャンセル', bg='black', fg='white', font=('Arial', 18))
-            label.pack(expand=True)
+            label.place(relx=0.5, rely=0.5, anchor='center')
             self._target_overlay.bind('<Button-1>', self._on_target_position_selected)
+            label.bind('<Button-1>', self._on_target_position_selected)
             self._target_overlay.bind('<Escape>', lambda e: self._cancel_target_position_selection())
             self._target_overlay.focus_force()
         except:
@@ -1093,22 +1117,40 @@ class HijikimameApp:
         now = time.time()
         if not force and now - self.target_image_last_search < 2.0:
             return
-        self.target_image_last_search = now
-        screen = self._grab_screen()
-        if screen is None:
+        if self._target_image_search_in_progress:
             return
-        result = self._find_template_on_screen(screen, self.target_image_template)
+        self._target_image_search_in_progress = True
+        self.target_image_last_search = now
+        template = self.target_image_template.copy()
+        def worker():
+            result = None
+            try:
+                screen = self._grab_screen()
+                if screen is not None:
+                    result = self._find_template_on_screen(screen, template)
+            except:
+                result = None
+            try:
+                self.master.after(0, lambda: self._finish_target_image_search(result))
+            except:
+                self._target_image_search_in_progress = False
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_target_image_search(self, result):
+        self._target_image_search_in_progress = False
         if result:
             x, y, score = result
             self.target_position = (x, y)
             self.settings['target_position'] = [x, y]
         else:
             self.target_position = None
+            self.settings['target_position'] = None
         self._update_target_status_labels()
 
     def _find_template_on_screen(self, screen, template):
         try:
-            screen_gray = screen.convert('L')
+            screen_gray_full = screen.convert('L')
+            screen_gray = screen_gray_full
             template_gray = template.convert('L')
             sw, sh = screen_gray.size
             tw, th = template_gray.size
@@ -1122,7 +1164,7 @@ class HijikimameApp:
             tw2, th2 = template_gray.size
             if tw2 < 8 or th2 < 8:
                 return None
-            step = max(1, min(16, tw2 // 4, th2 // 4, 12))
+            step = max(1, min(4, max(1, tw2 // 16), max(1, th2 // 16)))
             small_template = template_gray.resize((64, 64), Image.LANCZOS)
             best_score = None
             best_xy = None
@@ -1136,8 +1178,40 @@ class HijikimameApp:
                         best_xy = (x, y)
             if best_xy is None:
                 return None
+
             bx, by = best_xy
-            return int(bx * scale + tw / 2), int(by * scale + th / 2), best_score
+            refine_radius = max(8, step * 2)
+            refined_score = best_score
+            for y in range(max(0, by - refine_radius), min(screen_gray.height - th2, by + refine_radius) + 1):
+                for x in range(max(0, bx - refine_radius), min(screen_gray.width - tw2, bx + refine_radius) + 1):
+                    patch = screen_gray.crop((x, y, x + tw2, y + th2)).resize((64, 64), Image.LANCZOS)
+                    diff = ImageChops.difference(patch, small_template)
+                    score = sum(diff.getdata())
+                    if score < refined_score:
+                        refined_score = score
+                        bx, by = x, y
+
+            if scale > 1.0:
+                orig_bx = min(sw - tw, int(bx * scale))
+                orig_by = min(sh - th, int(by * scale))
+                final_score = refined_score
+                final_bx = orig_bx
+                final_by = orig_by
+                full_radius = max(16, int(scale * step * 2), 32)
+                step2 = max(1, min(2, full_radius // 4))
+                for y in range(max(0, orig_by - full_radius), min(sh - th, orig_by + full_radius) + 1, step2):
+                    for x in range(max(0, orig_bx - full_radius), min(sw - tw, orig_bx + full_radius) + 1, step2):
+                        patch = screen_gray_full.crop((x, y, x + tw, y + th)).resize((64, 64), Image.LANCZOS)
+                        diff = ImageChops.difference(patch, small_template)
+                        score = sum(diff.getdata())
+                        if score < final_score:
+                            final_score = score
+                            final_bx = x
+                            final_by = y
+                bx, by = final_bx, final_by
+                refined_score = final_score
+
+            return int(bx + tw / 2), int(by + th / 2), refined_score
         except:
             return None
 
@@ -1148,12 +1222,17 @@ class HijikimameApp:
                 mode = (mode + 1) % 3
                 if mode == 1 and self.target_position is None:
                     continue
-                if mode == 2 and (self.target_image_template is None or not self.target_image_path):
+                if mode == 2 and self.target_image_template is None:
                     continue
                 break
+            if mode == 2 and self.target_image_template is None:
+                mode = 0
             self.settings['tracking_target_mode'] = mode
             if mode == 2:
                 self._search_target_image_on_screen(force=True)
+            if mode == 0:
+                self.settings['target_position'] = None
+                self.target_position = None
             self._update_target_status_labels()
             self.save_settings_file()
             self.broadcast_settings()
@@ -1163,6 +1242,12 @@ class HijikimameApp:
     def clear_target_tracking(self):
         try:
             self.settings['tracking_target_mode'] = 0
+            self.settings['target_position'] = None
+            self.settings['target_image_path'] = None
+            self.target_position = None
+            self.target_image_path = None
+            self.target_image_template = None
+            self._target_image_search_in_progress = False
             self._update_target_status_labels()
             self.save_settings_file()
             self.broadcast_settings()
@@ -1191,7 +1276,6 @@ class HijikimameApp:
             top_btn_frame = tk.Frame(self._edit_win)
             top_btn_frame.pack(fill='x', pady=5)
             tk.Button(top_btn_frame, text="キャラ切替", command=self.toggle_mode).pack(side='left', padx=5)
-            tk.Button(top_btn_frame, text="追尾先切替", command=self.toggle_tracking_target_mode).pack(side='left', padx=5)
             tk.Button(top_btn_frame, text="場所選択", command=self.request_target_position_selection).pack(side='left', padx=5)
             tk.Button(top_btn_frame, text="画像追跡設定", command=self.choose_target_image).pack(side='left', padx=5)
             tk.Button(top_btn_frame, text="追尾解除", command=self.clear_target_tracking).pack(side='left', padx=5)
@@ -1221,7 +1305,8 @@ class HijikimameApp:
             1: '2. ろず',
             2: '3. たこ焼き',
             3: '4. 虹き豆',
-            4: '5. 追加キャラ'
+            4: '5. オーバーローダーひじき豆'
+
         }
         for mi in range(5):
             btn = tk.Button(char_container, text=mode_names.get(mi, f'{mi+1}'), width=20,
@@ -1234,7 +1319,7 @@ class HijikimameApp:
         repulsion_cb = tk.Checkbutton(self._edit_win, text="ひじき豆の反発", variable=repulsion_var)
         repulsion_cb.pack(anchor='w', padx=8, pady=2)
 
-        tk.Label(self._edit_win, text="マウスカーソルの追従速度:").pack(anchor='w', padx=8)
+        tk.Label(self._edit_win, text="追尾速度:").pack(anchor='w', padx=8)
         tracking_scale = tk.Scale(self._edit_win, from_=0.0, to=0.1, resolution=0.001, orient='horizontal')
         tracking_scale.set(self.settings.get('tracking_speed', TRACKING_SPEED))
         tracking_scale.pack(fill='x', padx=8)
@@ -1297,6 +1382,14 @@ class HijikimameApp:
             self.settings['edge_bounce_strength'] = EDGE_BOUNCE_STRENGTH
             self.settings['mouse_repulsion_enabled'] = True
             self.settings['selected_mode'] = 0
+            self.settings['tracking_target_mode'] = 0
+            self.settings['target_position'] = None
+            self.settings['target_image_path'] = None
+            self.target_position = None
+            self.target_image_path = None
+            self.target_image_template = None
+            self.target_image_last_search = 0.0
+            self._target_image_search_in_progress = False
             self.current_mode = 0
             nijiki_scale.set(NIJIKI_DEFAULT_FPS)
             tracking_scale.set(TRACKING_SPEED)
@@ -1310,6 +1403,7 @@ class HijikimameApp:
             except:
                 pass
             self.set_mode(0)
+            self._update_target_status_labels()
             apply_settings()
 
         # ボタンを下に配置
@@ -1444,7 +1538,11 @@ class HijikimameApp:
 
         target_mode = int(self.settings.get('tracking_target_mode', 0))
         if target_mode == 2:
-            self._search_target_image_on_screen()
+            if self.target_image_template:
+                self._search_target_image_on_screen()
+            else:
+                target_mode = 0
+                self.settings['tracking_target_mode'] = 0
         if target_mode == 1 and self.target_position:
             target_x, target_y = self.target_position
         elif target_mode == 2 and self.target_position:
@@ -1456,6 +1554,9 @@ class HijikimameApp:
         char_center_y = self.y + self.image_height // 2
         dx_char = target_x - char_center_x; dy_char = target_y - char_center_y
         distance = math.hypot(dx_char, dy_char)
+        touch_margin = max(16, min(self.image_width, self.image_height) // 6)
+        is_mouse_over_char = (self.x - touch_margin <= mouse_x <= self.x + self.image_width + touch_margin and
+                               self.y - touch_margin <= mouse_y <= self.y + self.image_height + touch_margin)
 
         # If the user is holding the character, follow cursor as before
         if self.is_dragging_stop:
@@ -1466,10 +1567,7 @@ class HijikimameApp:
             repulsion_enabled = self.settings.get('mouse_repulsion_enabled', True)
             # Detect sudden cursor acceleration and convert to an impulse throw
             try:
-                # only trigger mouse-acceleration throw when cursor is near the character
-                current_collision_distance = COLLISION_DISTANCE_BASE + (mouse_speed * COLLISION_EXPANSION_RATE)
-                if repulsion_enabled and mouse_a_mag >= MOUSE_ACCELERATION_THROW_THRESHOLD and distance < current_collision_distance:
-                    # apply throw impulse from cursor acceleration
+                if repulsion_enabled and is_mouse_over_char and mouse_a_mag >= MOUSE_ACCELERATION_THROW_THRESHOLD:
                     self.vx = mouse_ax * MOUSE_ACCELERATION_THROW_MULTIPLIER
                     self.vy = mouse_ay * MOUSE_ACCELERATION_THROW_MULTIPLIER
                     self.throw_cooldown = THROW_COOLDOWN_FRAMES
@@ -1483,13 +1581,17 @@ class HijikimameApp:
                 self.throw_cooldown -= 1; self.vx *= 0.92; self.vy *= 0.92
                 self.x += self.vx; self.y += self.vy
             else:
-                current_collision_distance = COLLISION_DISTANCE_BASE + (mouse_speed * COLLISION_EXPANSION_RATE)
                 repulsion_enabled = self.settings.get('mouse_repulsion_enabled', True)
-                if repulsion_enabled and distance < current_collision_distance:
-                    actual_bounce_force = max(10, mouse_speed * BOUNCE_STRENGTH)
+                if repulsion_enabled and is_mouse_over_char:
+                    actual_bounce_force = max(20, mouse_speed * BOUNCE_STRENGTH, 80.0 / max(distance, 1.0))
                     if distance != 0:
-                        self.vx = -(dx_char / distance) * actual_bounce_force
-                        self.vy = -(dy_char / distance) * actual_bounce_force
+                        nx = dx_char / distance
+                        ny = dy_char / distance
+                        self.vx = -nx * actual_bounce_force
+                        self.vy = -ny * actual_bounce_force
+                        push_back = max(self.image_width, self.image_height) * 0.25
+                        self.x -= nx * push_back
+                        self.y -= ny * push_back
                     else:
                         angle = random.uniform(0, 2 * math.pi)
                         self.vx = math.cos(angle) * actual_bounce_force
