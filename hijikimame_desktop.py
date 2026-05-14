@@ -101,7 +101,7 @@ DEFAULT_EYE_COLOR = 'black'
 INVERTED_EYE_COLOR = 'white'
 
 # アプリバージョン（リリースタグと一致させてください）
-VERSION = "v2.1.4"
+VERSION = "Snapshot v2.2.0"
 
 
 def _self_replace_target(target_path, timeout=30):
@@ -155,6 +155,8 @@ def _check_and_initiate_update():
     環境変数 `GITHUB_OWNER` と `GITHUB_REPO` を必須とし、プライベートの場合は
     `GITHUB_UPDATE_TOKEN` または `GITHUB_TOKEN` を利用してください。
     """
+    if VERSION.startswith('Snapshot'):
+        return
     if not getattr(sys, 'frozen', False):
         return
     if requests is None:
@@ -289,6 +291,7 @@ class HijikimameApp:
             'edge_bounce_count': EDGE_BOUNCE_COUNT_DEFAULT,
             'edge_bounce_strength': EDGE_BOUNCE_STRENGTH,
             'mouse_repulsion_enabled': True,
+            'screen_boundary_mode': 'bounce',
         }
 
         try:
@@ -320,6 +323,7 @@ class HijikimameApp:
         self.settings.setdefault('target_position', None)
         self.settings.setdefault('target_image_path', None)
         self.settings.setdefault('selected_mode', 0)
+        self.settings.setdefault('screen_boundary_mode', 'bounce')
 
         if isinstance(self.settings.get('target_position'), list) and len(self.settings.get('target_position')) == 2:
             try:
@@ -352,8 +356,8 @@ class HijikimameApp:
         self.image_width, self.image_height = self.original_image.size
         self.tk_image = ImageTk.PhotoImage(self.original_image)
 
-        screen_width = master.winfo_screenwidth()
-        screen_height = master.winfo_screenheight()
+        screen_width = master.winfo_vrootwidth()
+        screen_height = master.winfo_vrootheight()
         self.x = screen_width // 2 - self.image_width // 2
         self.y = screen_height // 2 - self.image_height // 2
         self.vx = 0
@@ -598,6 +602,8 @@ class HijikimameApp:
             pass
 
     def _check_and_initiate_update(self):
+        if VERSION.startswith('Snapshot'):
+            return
         if requests is None:
             return
         owner = os.environ.get('GITHUB_OWNER', GITHUB_DEFAULT_OWNER)
@@ -1040,8 +1046,8 @@ class HijikimameApp:
         except:
             pass
         try:
-            screen_w = self.master.winfo_screenwidth()
-            screen_h = self.master.winfo_screenheight()
+            screen_w = self.master.winfo_vrootwidth()
+            screen_h = self.master.winfo_vrootheight()
             self._target_overlay = tk.Toplevel(self.master)
             self._target_overlay.overrideredirect(True)
             self._target_overlay.attributes('-alpha', 0.2)
@@ -1319,6 +1325,14 @@ class HijikimameApp:
         repulsion_cb = tk.Checkbutton(self._edit_win, text="ひじき豆の反発", variable=repulsion_var)
         repulsion_cb.pack(anchor='w', padx=8, pady=2)
 
+        tk.Label(self._edit_win, text="画面境界の動作:").pack(anchor='w', padx=8)
+        boundary_frame = tk.Frame(self._edit_win)
+        boundary_frame.pack(anchor='w', padx=8)
+        boundary_mode = self.settings.get('screen_boundary_mode', 'bounce')
+        boundary_var = tk.StringVar(value=boundary_mode)
+        tk.Radiobutton(boundary_frame, text="バウンス", variable=boundary_var, value='bounce').pack(side='left')
+        tk.Radiobutton(boundary_frame, text="止まる", variable=boundary_var, value='stop').pack(side='left')
+
         tk.Label(self._edit_win, text="追尾速度:").pack(anchor='w', padx=8)
         tracking_scale = tk.Scale(self._edit_win, from_=0.0, to=0.1, resolution=0.001, orient='horizontal')
         tracking_scale.set(self.settings.get('tracking_speed', TRACKING_SPEED))
@@ -1352,6 +1366,7 @@ class HijikimameApp:
         def apply_settings():
             self.settings['nijiki_fps'] = int(nijiki_scale.get())
             self.settings['mouse_repulsion_enabled'] = bool(repulsion_var.get())
+            self.settings['screen_boundary_mode'] = boundary_var.get()
             self.settings['tracking_speed'] = float(tracking_scale.get())
             self.settings['throw_speed_multiplier'] = float(throw_scale.get())
             self.settings['max_throw_multiplier'] = float(max_throw_scale.get())
@@ -1381,6 +1396,7 @@ class HijikimameApp:
             self.settings['edge_bounce_count'] = EDGE_BOUNCE_COUNT_DEFAULT
             self.settings['edge_bounce_strength'] = EDGE_BOUNCE_STRENGTH
             self.settings['mouse_repulsion_enabled'] = True
+            self.settings['screen_boundary_mode'] = 'bounce'
             self.settings['selected_mode'] = 0
             self.settings['tracking_target_mode'] = 0
             self.settings['target_position'] = None
@@ -1398,6 +1414,7 @@ class HijikimameApp:
             bounce_scale.set(EDGE_BOUNCE_COUNT_DEFAULT)
             bounce_strength_scale.set(EDGE_BOUNCE_STRENGTH)
             repulsion_var.set(1)
+            boundary_var.set('bounce')
             try:
                 self._refresh_character_buttons()
             except:
@@ -1607,54 +1624,61 @@ class HijikimameApp:
         self._last_mouse_vy = mouse_vy
         self.last_mouse_x = mouse_x; self.last_mouse_y = mouse_y
 
-        screen_w = self.master.winfo_screenwidth()
-        screen_h = self.master.winfo_screenheight()
+        screen_w = self.master.winfo_vrootwidth()
+        screen_h = self.master.winfo_vrootheight()
         strg = self.settings.get('edge_bounce_strength', EDGE_BOUNCE_STRENGTH)
         # cap to avoid extremely large velocities after reflection
         max_cap = max(screen_w, screen_h) * 0.6
-        # X axis edge handling: when thrown (throw_cooldown>0) always bounce irrespective of remaining_bounces
+        boundary_mode = self.settings.get('screen_boundary_mode', 'bounce')
+        # X axis edge handling
         if self.x < 0 or self.x > screen_w - self.image_width:
             self.x = max(0, min(self.x, screen_w - self.image_width))
-            if self.throw_cooldown > 0:
-                # reflect velocity and apply strength; do not consume remaining_bounces here
-                self.vx = -self.vx * float(strg)
-                # if velocity is very small (damped), use last throw velocity to ensure a noticeable bounce
-                try:
-                    lvx = getattr(self, '_last_throw_velocity', (0, 0))[0]
-                except:
-                    lvx = 0
-                if abs(self.vx) < 2 and abs(lvx) > 0:
-                    self.vx = -math.copysign(max(10, abs(lvx) * float(strg)), lvx)
-                # clamp magnitude
-                if self.vx > max_cap: self.vx = max_cap
-                if self.vx < -max_cap: self.vx = -max_cap
-            elif self.remaining_bounces > 0:
-                self.vx *= -float(strg)
-                self.remaining_bounces -= 1
-                if self.vx > max_cap: self.vx = max_cap
-                if self.vx < -max_cap: self.vx = -max_cap
-            else:
+            if boundary_mode == 'bounce':
+                if self.throw_cooldown > 0:
+                    # reflect velocity and apply strength; do not consume remaining_bounces here
+                    self.vx = -self.vx * float(strg)
+                    # if velocity is very small (damped), use last throw velocity to ensure a noticeable bounce
+                    try:
+                        lvx = getattr(self, '_last_throw_velocity', (0, 0))[0]
+                    except:
+                        lvx = 0
+                    if abs(self.vx) < 2 and abs(lvx) > 0:
+                        self.vx = -math.copysign(max(10, abs(lvx) * float(strg)), lvx)
+                    # clamp magnitude
+                    if self.vx > max_cap: self.vx = max_cap
+                    if self.vx < -max_cap: self.vx = -max_cap
+                elif self.remaining_bounces > 0:
+                    self.vx *= -float(strg)
+                    self.remaining_bounces -= 1
+                    if self.vx > max_cap: self.vx = max_cap
+                    if self.vx < -max_cap: self.vx = -max_cap
+                else:
+                    self.vx = 0
+            else:  # stop
                 self.vx = 0
 
         # Y axis edge handling (same rules)
         if self.y < 0 or self.y > screen_h - self.image_height:
             self.y = max(0, min(self.y, screen_h - self.image_height))
-            if self.throw_cooldown > 0:
-                self.vy = -self.vy * float(strg)
-                try:
-                    lvy = getattr(self, '_last_throw_velocity', (0, 0))[1]
-                except:
-                    lvy = 0
-                if abs(self.vy) < 2 and abs(lvy) > 0:
-                    self.vy = -math.copysign(max(10, abs(lvy) * float(strg)), lvy)
-                if self.vy > max_cap: self.vy = max_cap
-                if self.vy < -max_cap: self.vy = -max_cap
-            elif self.remaining_bounces > 0:
-                self.vy *= -float(strg)
-                self.remaining_bounces -= 1
-                if self.vy > max_cap: self.vy = max_cap
-                if self.vy < -max_cap: self.vy = -max_cap
-            else:
+            if boundary_mode == 'bounce':
+                if self.throw_cooldown > 0:
+                    self.vy = -self.vy * float(strg)
+                    try:
+                        lvy = getattr(self, '_last_throw_velocity', (0, 0))[1]
+                    except:
+                        lvy = 0
+                    if abs(self.vy) < 2 and abs(lvy) > 0:
+                        self.vy = -math.copysign(max(10, abs(lvy) * float(strg)), lvy)
+                    if self.vy > max_cap: self.vy = max_cap
+                    if self.vy < -max_cap: self.vy = -max_cap
+                elif self.remaining_bounces > 0:
+                    self.vy *= -float(strg)
+                    self.remaining_bounces -= 1
+                    if self.vy > max_cap: self.vy = max_cap
+                    if self.vy < -max_cap: self.vy = -max_cap
+                else:
+                    self.vy = 0
+            else:  # stop
                 self.vy = 0
 
         if self.current_mode == 3 and self.nijiki_indices:
