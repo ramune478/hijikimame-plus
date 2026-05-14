@@ -101,7 +101,7 @@ DEFAULT_EYE_COLOR = 'black'
 INVERTED_EYE_COLOR = 'white'
 
 # アプリバージョン（リリースタグと一致させてください）
-VERSION = "Snapshot v2.2.0"
+VERSION = "v2.2.0"
 
 
 def _self_replace_target(target_path, timeout=30):
@@ -1325,13 +1325,7 @@ class HijikimameApp:
         repulsion_cb = tk.Checkbutton(self._edit_win, text="ひじき豆の反発", variable=repulsion_var)
         repulsion_cb.pack(anchor='w', padx=8, pady=2)
 
-        tk.Label(self._edit_win, text="画面境界の動作:").pack(anchor='w', padx=8)
-        boundary_frame = tk.Frame(self._edit_win)
-        boundary_frame.pack(anchor='w', padx=8)
-        boundary_mode = self.settings.get('screen_boundary_mode', 'bounce')
-        boundary_var = tk.StringVar(value=boundary_mode)
-        tk.Radiobutton(boundary_frame, text="バウンス", variable=boundary_var, value='bounce').pack(side='left')
-        tk.Radiobutton(boundary_frame, text="止まる", variable=boundary_var, value='stop').pack(side='left')
+
 
         tk.Label(self._edit_win, text="追尾速度:").pack(anchor='w', padx=8)
         tracking_scale = tk.Scale(self._edit_win, from_=0.0, to=0.1, resolution=0.001, orient='horizontal')
@@ -1366,7 +1360,6 @@ class HijikimameApp:
         def apply_settings():
             self.settings['nijiki_fps'] = int(nijiki_scale.get())
             self.settings['mouse_repulsion_enabled'] = bool(repulsion_var.get())
-            self.settings['screen_boundary_mode'] = boundary_var.get()
             self.settings['tracking_speed'] = float(tracking_scale.get())
             self.settings['throw_speed_multiplier'] = float(throw_scale.get())
             self.settings['max_throw_multiplier'] = float(max_throw_scale.get())
@@ -1414,7 +1407,6 @@ class HijikimameApp:
             bounce_scale.set(EDGE_BOUNCE_COUNT_DEFAULT)
             bounce_strength_scale.set(EDGE_BOUNCE_STRENGTH)
             repulsion_var.set(1)
-            boundary_var.set('bounce')
             try:
                 self._refresh_character_buttons()
             except:
